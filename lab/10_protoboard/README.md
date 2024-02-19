@@ -28,6 +28,6 @@ Users have the option to manually adjust the lighting according to their prefere
 ### Demo GIF
 
 ![](IMG_3657.jpg)
-![](IMG_3657.gif)
+![](IMG_3656.gif)
 
 
