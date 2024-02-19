@@ -17,3 +17,5 @@ Create a 'sequencer' that allows you to record BOOT button presses and play them
 
 
 In this demonstration, I illustrated the process of capturing and replaying the sequence of BOOT button presses through two separate iterations.
+
+![](IMG_3318.gif)
