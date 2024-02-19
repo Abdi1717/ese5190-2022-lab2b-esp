@@ -1,0 +1,112 @@
+; Improved I2C Program for RP2040 PIO
+; Enhanced readability with clear naming and structured layout
+
+.program improved_i2c
+.side_set 1 opt pindirs
+
+; Enhanced TX Encoding format for clarity:
+; | 15:10 | 9    | 8:1 | 0   |
+; | Cmd   | End  | Data| Ack |
+
+; Command execution for stop/start sequences
+; "End" indicates the final byte in a transfer, managing NAK response
+; Utilize autopull with a threshold of 16 and autopush with 8
+; Halfword writes to TX FIFO ensure immediate data availability
+
+process_ack:
+    jmp y-- main_loop        ; Continue if ACK is expected
+    irq wait 0 rel           ; Halt and signal interrupt on unexpected NAK
+
+transmit_byte:
+    set x, 7                 ; 8 bits per byte
+byte_loop:
+    out pindirs, 1       [7] ; Prepare data bit for transmission
+    nop             side 1 [2] ; SCL high for data read/write
+    wait 1 pin, 1        [4] ; Wait for potential clock stretching
+    in pins, 1           [7] ; Read data bit
+    jmp x-- byte_loop side 0 [7] ; SCL low, next bit
+
+    ; ACK bit processing
+    out pindirs, 1       [7] ; Drive SDA for ACK
+    nop             side 1 [7] ; SCL high for ACK
+    wait 1 pin, 1        [7] ; Wait for potential clock stretching
+    jmp pin process_ack side 0 [2] ; Check SDA for ACK/NAK
+    mov isr, null            ; Reset ISR bit count for next byte
+
+entry_point:
+.wrap_target
+    out x, 6                 ; Decode command count from FIFO
+    out y, 1                 ; Decode NAK ignore flag
+    jmp !x transmit_byte     ; If Cmd is 0, process data byte
+    out null, 32             ; Clear OSR for non-data commands
+execute_command:
+    out exec, 16             ; Execute command from FIFO
+    jmp x-- execute_command  ; Repeat for each command in sequence
+.wrap
+
+; C SDK Integration for Enhanced I2C Initialization and Configuration
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+
+// Improved I2C initialization with clearer configuration steps
+void initialize_i2c(PIO pio, uint sm, uint offset, uint sda_pin, uint scl_pin) {
+    assert(scl_pin == sda_pin + 1); // SCL must follow SDA
+    pio_sm_config cfg = i2c_program_get_default_config(offset);
+
+    // Define pin mapping for I2C operation
+    sm_config_set_out_pins(&cfg, sda_pin, 1);
+    sm_config_set_set_pins(&cfg, sda_pin, 1);
+    sm_config_set_in_pins(&cfg, sda_pin);
+    sm_config_set_sideset_pins(&cfg, scl_pin);
+    sm_config_set_jmp_pin(&cfg, sda_pin);
+
+    // Configure data shift directions and clock division for I2C speed
+    sm_config_set_out_shift(&cfg, false, true, 16);
+    sm_config_set_in_shift(&cfg, false, true, 8);
+    float clk_div = (float)clock_get_hz(clk_sys) / (4800 * 1000);
+    sm_config_set_clkdiv(&cfg, clk_div);
+
+    // Setup pull-up resistors and output enable overrides for stable I2C bus state
+    setup_pull_ups_and_overrides(pio, sm, sda_pin, scl_pin);
+
+    // Start the state machine with the configured settings
+    pio_sm_init(pio, sm, offset + i2c_offset_entry_point, &cfg);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+// Utility function to setup pull-up resistors and output enable overrides
+void setup_pull_ups_and_overrides(PIO pio, uint sm, uint sda_pin, uint scl_pin) {
+    gpio_pull_up(scl_pin);
+    gpio_pull_up(sda_pin);
+    uint32_t pin_mask = (1u << sda_pin) | (1u << scl_pin);
+    pio_sm_set_pins_with_mask(pio, sm, pin_mask, pin_mask);
+    pio_sm_set_pindirs_with_mask(pio, sm, pin_mask, pin_mask);
+    pio_gpio_init(pio, sda_pin);
+    gpio_set_oeover(sda_pin, GPIO_OVERRIDE_INVERT);
+    pio_gpio_init(pio, scl_pin);
+    gpio_set_oeover(scl_pin, GPIO_OVERRIDE_INVERT);
+    pio_sm_set_pins_with_mask(pio, sm, 0, pin_mask);
+}
+%}
+
+; Program segment for START/STOP/RSTART sequences via FIFO instructions
+.program i2c_control_sequences
+.side_set 1 opt
+
+; Instruction table for software-controlled I2C bus state transitions
+
+    set pindirs, 0 side 0 [7] ; SCL low, SDA low
+    set pindirs, 1 side 0 [7] ; SCL low, SDA high
+    set pindirs, 0 side 1 [7] ; SCL high, SDA low
+    set pindirs, 1 side 1 [7] ; SCL high, SDA high
+
+% c-sdk {
+// Enum for instruction table indexing
+enum {
+    I2C_SCL_LOW_SDA_LOW = 0,
+    I2C_SCL_LOW_SDA_HIGH,
+    I2C_SCL_HIGH_SDA_LOW,
+    I2C_SCL_HIGH_SDA_HIGH
+};
+%}
